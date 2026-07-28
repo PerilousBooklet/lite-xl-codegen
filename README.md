@@ -1,4 +1,4 @@
-# lite-xl-boilerplate-utils
+# lite-xl-codegen
 
 A simple plugin that generates boilerplate for programming languages.
 

@@ -1,5 +1,5 @@
 -- mod-version:3
-local boilerplate_utils = require 'plugins.boilerplate_utils'
+local codegen = require 'plugins.codegen'
 
 
 -- FILE FILL
@@ -78,7 +78,7 @@ local docs_method = [[
 
 
 -- Init
-boilerplate_utils.add_module() {
+codegen.add_module() {
   name = "java",
   desc = "",
   file_extensions = { ".java" },
@@ -151,7 +151,6 @@ boilerplate_utils.add_module() {
   components = {
     -- ?: Entity + EntityDAO + EntityService + EntityController
     -- ?: Entity + EntityDTO + EntityJpaRepository + EntityService + EntityController
-    -- es. x lavoro: Endpoint + J + M + R classes
   },
   properties = {
     ["root_package_path"] = {

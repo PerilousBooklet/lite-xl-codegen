@@ -1,6 +1,5 @@
 -- mod-version:3
-local boilerplate_utils = require 'plugins.boilerplate_utils'
-
+local codegen = require 'plugins.codegen'
 
 -- __sss__ is the tag to be replaced with the header name
 local file_fill_base = [[
@@ -8,25 +7,22 @@ local file_fill_base = [[
 <html>
   
   <head>
-    <title></title>
+    <title>__sss__</title>
   </head>
   
   <body>
     
-    
+    ...
     
   </body>
   
 </html>
 ]]
 
-
-boilerplate_utils.add_module() {
-  name = "HTML", 
+codegen.add_module() {
+  name = "HTML",
   desc = "",
-  file_extensions = {
-    ".h"
-  },
+  file_extensions = { ".html" },
   file_fills = {
     {
       type = "base",

@@ -6,8 +6,19 @@ local config = require "core.config"
 local TreeView = require "plugins.treeview"
 local DocView = require "core.docview"
 
-local fsutils = require "plugins.boilerplate_utils.fsutils"
+local fsutils = require "plugins.codegen.fsutils"
 
+-- TODO: allows updating boilerplate code
+--       (run command -> check if boilerplate already exists -> update it)
+--       (or also remove boilerplate containing unknown names)
+
+-- TODO: component generation
+--       (es. java: entity class, bastano il nome della class, che contiene il percorso relativo)
+--       (e i nomi degli attributi/campi)
+--       (usa comando e context menu)
+
+-- TODO: add cli code doc generators (es. jautodoc for Java, ...) integration
+--       (es. generate documentation comments for all elements of a source file)
 
 -----------------------------------------
 -- NOTES ON MANIPULATING SELECTED TEXT --
@@ -125,27 +136,20 @@ local fsutils = require "plugins.boilerplate_utils.fsutils"
 -- same as above but the "\n" goes after the new_text and before the beneath_text
 -- NOTE: for wrapping code blocks, add one more level of indentation to all lines
 
-
 -------
 -- ? --
 -------
 
-local boilerplate_utils = {}
+local codegen = {}
 local modules = {}
-
--- TODO: how does the treeview context menu work?
-local treeview_menu = TreeView.contextmenu
--- local docview_menu_found, docview_menu = pcall(require, "plugins.contextmenu")
-
 
 ---------------------------
 -- Configuration Options --
 ---------------------------
 
-config.plugins.boilerplate_utils = common.merge({
+config.plugins.codegen = common.merge({
   -- ?
-}, config.plugins.boilerplate_utils)
-
+}, config.plugins.codegen)
 
 -----------------------
 -- Utility functions --
@@ -159,19 +163,18 @@ local function get_active_docview()
   return nil
 end
 
-
 ------------------
 -- Data Storage --
 ------------------
 
-function boilerplate_utils.add_module()
+function codegen.add_module()
 	return function (t)
     table.insert(modules, t)
   end
 end
 
 local function parse_list()
-	local list = system.list_dir(USERDIR .. "/plugins/boilerplate_utils/modules")
+	local list = system.list_dir(USERDIR .. "/plugins/codegen/modules")
   local list_matched = {}
   local temp_string = ""
   for k, v in pairs(list) do
@@ -181,14 +184,13 @@ local function parse_list()
   return list_matched
 end
 
-function boilerplate_utils.load()
+function codegen.load()
   local modules_list = parse_list()
   for _, v in ipairs(modules_list) do
-    require("plugins.boilerplate_utils.modules." .. v)
-    core.log("Loaded boilerplate_utils module: " .. v)
+    require("plugins.codegen.modules." .. v)
+    core.log("Loaded codegen module: " .. v)
   end
 end
-
 
 --------------------------
 -- Generation Functions --
@@ -206,6 +208,14 @@ end
 
 local function test_global()
   core.log("TEST GLOBAL")
+end
+
+local function test_global_folder()
+  core.log("TEST FOLDER")
+end
+
+local function test_global_file()
+  core.log("TEST FILE")
 end
 
 -- NOTE: returns table on first match
@@ -232,7 +242,7 @@ function core.open_doc(filename, ...)
   local file_extension = string.match(filename, "%.%a+$")
   local selected_module = select_module(file_extension)
   -- FIX: returned module is missing pieces ?
-  print(selected_module)
+  -- print(selected_module)
   -- WIP: get package path for new Java file, set it and write it (get the pkg path root from the properties table)
   if doc.filename == filename and not file_exists then
   	if string.find(doc.filename, file_extension) then
@@ -266,13 +276,12 @@ local function wrap_text(anchor, text, wrap_line_top, wrap_line_bottom)
 end
 
 local function create_folder(folder_path, folder_name)
-  -- copy from lite-lx-boilerplate_utils
+  -- copy from lite-lx-codegen
 end
 
 local function create_and_fill_file(file_path, file_name, file_content)
-  -- copy from lite-lx-boilerplate_utils
+  -- copy from lite-lx-codegen
 end
-
 
 -----------
 -- Logic --
@@ -328,46 +337,49 @@ local function generate_component()
   -- TODO: create and fill files
 end
 
-
 ------------------
 -- Context Menu --
 ------------------
 
--- This adds a new separator in the treeview context menu
+local treeview_menu = TreeView.contextmenu
+-- Check: is folder
 treeview_menu:register(
   function()
-    return TreeView.hovered_item and (fsutils.is_dir(TreeView.hovered_item.abs_filename) ~= true or TreeView.hovered_item.abs_filename ~= fsutils.project_dir())
+    return
+      TreeView.hovered_item
+      and (
+        fsutils.is_dir(TreeView.hovered_item.abs_filename) == true
+        and TreeView.hovered_item.abs_filename ~= fsutils.project_dir()
+      )
   end,
-  { 
-    treeview_menu.DIVIDER
+  {
+    treeview_menu.DIVIDER,
+    { text = "Test FOLDER", command = "code-generator:test-global-folder" },
+    -- TODO: add component
   }
 )
-
--- ?
+-- Check: is file
 treeview_menu:register(
   function()
     return TreeView.hovered_item and fsutils.is_dir(TreeView.hovered_item.abs_filename) ~= true
-  end,
-  {
-    {
-      text = "Test",
-      command = "boilerplate:test-global"
-    }
+  end, {
+    treeview_menu.DIVIDER,
+    { text = "Test FILE", command = "code-generator:test-global-file" },
+    -- TODO: generate doc comments
   }
 )
 
--- This adds a new separator to a docview context menu
--- if docview_menu_found then
---   docview_menu:register(
---     -- FIX: all context menus are overridden
---     -- NOTE: cause: context is set to global
---     nil,
---     {
---       docview_menu.DIVIDER
---     }
---   )
--- end
-
+-- Check: is in DocView
+local contextmenu = require "plugins.contextmenu"
+contextmenu:register(
+  "core.docview",
+  {
+    contextmenu.DIVIDER,
+    { text = "Test DocView", command = "code-generator:test-global" },
+    -- TODO: functionality: add boilerplate (all vars/funcs by default, then remove the unneeded ones)
+    -- TODO: functionality: update boilerplate (requires lsp+lsp-server integration)
+  }
+)
 
 --------------
 -- Commands --
@@ -376,20 +388,28 @@ treeview_menu:register(
 -- NOTE: the plugin gets called from here...
 
 -- Context: global
-command.add(nil,{ 
-  ["boilerplate:test-global"] = test_global
-})
+command.add(
+  nil,
+  {
+    ["code-generator:test-global"] = test_global,
+    ["code-generator:test-global-folder"] = test_global_folder,
+    ["code-generator:test-global-file"] = test_global_file
+  }
+)
 
 -- Context: current docview
-command.add(get_active_docview(), {
-  -- Test
-  ["boilerplate:test-in-doc"] = test_in_doc,
-  -- Final
-  ["boilerplate:generate-boilerplate"] = generate_boilerplate,
-  ["boilerplate:wrap-code-selection"] = wrap_code_selection,
-  ["boilerplate:generate-doc-comment"] = generate_doc_comment,
-  ["boilerplate:generate-doc-comments"] = generate_doc_comments
-})
+command.add(
+  get_active_docview(),
+  {
+    -- Test
+    ["code-generator:test-in-doc"] = test_in_doc,
+    -- Final
+    ["code-generator:generate-boilerplate"] = generate_boilerplate,
+    ["code-generator:wrap-code-selection"] = wrap_code_selection,
+    ["code-generator:generate-doc-comment"] = generate_doc_comment,
+    ["code-generator:generate-doc-comments"] = generate_doc_comments
+  }
+)
 
 -- Context: treeview's context menu
 command.add(
@@ -397,17 +417,16 @@ command.add(
     return TreeView.hovered_item and fsutils.is_dir(TreeView.hovered_item.abs_filename) ~= true
   end, {
     -- Test
-    ["boilerplate:test"] = test,
+    ["code-generator:test"] = test,
     -- Final
-    ["boilerplate:generate_component"] = generate_component
+    ["code-generator:generate_component"] = generate_component
   }
 )
-
 
 -------
 -- ? --
 -------
 
-core.add_thread(function() boilerplate_utils.load() end)
+core.add_thread(function() codegen.load() end)
 
-return boilerplate_utils
+return codegen

@@ -1,26 +1,20 @@
 -- mod-version:3
+local core = require "core"
 local codegen = require 'plugins.codegen'
 
+local shebang = [[
+#!/bin/bash
 
--- sss is the tag to be replaced with the PHP base tag
-
-local file_fill_base = [[
-<?php
-  
-  
-  
-?>
 ]]
 
-
 codegen.add_module() {
-  name = "", 
+  name = "bash",
   desc = "",
-  file_extensions = { ".php" },
+  file_extensions = {},
   file_fills = {
     {
-      type = "base",
-      content = file_fill_base
+      type = "",
+      content = shebang
     }
   },
   boilerplate = {},
