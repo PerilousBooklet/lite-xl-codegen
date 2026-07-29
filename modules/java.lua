@@ -1,10 +1,8 @@
 -- mod-version:3
 local codegen = require 'plugins.codegen'
 
-
 -- FILE FILL
-local file_fill_package_path = ""
-
+local file_fill_package_path = "tempp"
 
 -- BOILERPLATE
 -- __THIS__ is a list of items to be constructed in the plugin's logic
@@ -25,7 +23,6 @@ public void set__REFERENCE_ATTR_IN_METHOD__(String __REFERENCE_ATTR__) {
     this.__REFERENCE_ATTR__ = __REFERENCE_ATTR__;
   }
 ]]
-
 
 -- WRAP
 -- __CODE__ is the selected code to be wrapped
@@ -51,32 +48,51 @@ try () {
 }
 ]]
 
-
 -- DOCS
--- __DOC__ is ?
+-- Placeholder convention (see init.lua's expand_doc_template):
+--   __NAME__          -> substituted inline with the symbol's name
+--   __PARAMS_BLOCK__  -> alone on its own line; expands to one
+--                        "* @param x" line per method parameter, or is
+--                        removed entirely (methods only, and only when
+--                        there are parameters)
+--   __RETURN_BLOCK__  -> alone on its own line; expands to a single
+--                        "* @return <type>" line for non-void methods,
+--                        removed otherwise
 local docs_package = [[
-
+/**
+ * __NAME__ package.
+ */
 ]]
 local docs_class = [[
-
+/**
+ * __NAME__ class.
+ */
 ]]
 local docs_interface = [[
-
+/**
+ * __NAME__ interface.
+ */
 ]]
 local docs_enum = [[
-
+/**
+ * __NAME__ enum.
+ */
 ]]
 local docs_attribute = [[
-
+/**
+ * __NAME__.
+ */
 ]]
 local docs_method = [[
-
+/**
+ * __NAME__.
+ *
+ * __PARAMS_BLOCK__
+ * __RETURN_BLOCK__
+ */
 ]]
 
-
 -- TODO: COMPONENTS
-
-
 -- Init
 codegen.add_module() {
   name = "java",
