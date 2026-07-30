@@ -2,7 +2,15 @@
 local codegen = require 'plugins.codegen'
 
 -- FILE FILL
-local file_fill_package_path = "tempp"
+local file_fill_package_path = [[
+package main;
+
+public class Main {
+
+  // ...
+
+}
+]]
 
 -- BOILERPLATE
 -- __THIS__ is a list of items to be constructed in the plugin's logic
