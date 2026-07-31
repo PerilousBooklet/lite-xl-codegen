@@ -13,6 +13,9 @@ local fsutils = require "plugins.codegen.fsutils"
 -- FIX: remove empty line underneath doc comment
 -- FIX: file_fill
 
+-- REVIEW: remove unnecessary comments
+-- REVIEW: full code review
+
 -- TODO: auto-determine the proper package path (es. for java) based on ?
 
 -- TODO: allows updating boilerplate code
