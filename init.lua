@@ -5,18 +5,14 @@ local command = require "core.command"
 local config = require "core.config"
 local TreeView = require "plugins.treeview"
 local DocView = require "core.docview"
+local Doc = require "core.doc"
 
 local fsutils = require "plugins.codegen.fsutils"
 
--- FIX: file-fill only appears when I press the file item in the treeview
 -- FIX: boilerplate should be wrapped in one-line thick lines of space
--- FIX: remove empty line underneath doc comment
--- FIX: file_fill
 
 -- REVIEW: remove unnecessary comments
 -- REVIEW: full code review
-
--- TODO: auto-determine the proper package path (es. for java) based on ?
 
 -- TODO: allows updating boilerplate code
 --       (run command -> check if boilerplate already exists -> update it)
@@ -26,9 +22,6 @@ local fsutils = require "plugins.codegen.fsutils"
 --       (es. java: entity class, bastano il nome della class, che contiene il percorso relativo)
 --       (e i nomi degli attributi/campi)
 --       (usa comando e context menu)
-
--- TODO: add cli code doc generators (es. jautodoc for Java, ...) integration
---       (es. generate documentation comments for all elements of a source file)
 
 -------
 -- ? --
@@ -55,6 +48,22 @@ local function get_active_docview()
     return av
   end
   return nil
+end
+
+-- Predicate for "Wrap Selection": true only when there's an active
+-- docview AND a genuine (non-empty) text selection in it. Used both to
+-- gate the code-generator:wrap-code-selection command itself and, via its
+-- own contextmenu:register() call further down, to keep the "Wrap
+-- Selection" item out of the docview's context menu entirely when
+-- nothing is selected -- rather than showing it and having it error out
+-- ("Select some code to wrap first") when clicked.
+local function has_active_selection()
+  local docview = get_active_docview()
+  if not docview then
+    return false
+  end
+  local line1, col1, line2, col2 = docview.doc:get_selection()
+  return not (line1 == line2 and col1 == col2)
 end
 
 ------------------
@@ -127,52 +136,203 @@ local function select_module(file_extension)
   return nil
 end
 
--- Automatic FILE FILL of New Named Doc
-local old_open_doc = core.open_doc -- Get old function content
--- Extend old function
-function core.open_doc(filename, ...)
-  -- Inherit old function content
-  local doc = old_open_doc(filename, ...)
-  -- New logic
-  -- TODO: draw commandview to select file fill type
-  local file_extension = string.match(filename, "%.%a+$")
-  local selected_module = select_module(file_extension)
-  -- WIP: get package path for new Java file, set it and write it (get the pkg path root from the properties table)
-  --
-  -- BUG FOUND: this used to gate on `system.get_file_info(filename) == nil`
-  -- ("the file doesn't exist on disk yet"), checked *before* calling
-  -- old_open_doc. That's backwards for the actual "New File" flow: the
-  -- tree view's New File command creates an empty file on disk first
-  -- (io.open(path, "w"):close()) and only *then* calls core.open_doc on
-  -- it. By the time this function ran, the file already existed --
-  -- file_exists was always true for exactly the brand-new files this was
-  -- supposed to fire on, so `not file_exists` was always false and the
-  -- fill never ran. It would only have worked for a filename that truly
-  -- had no file behind it anywhere, which doesn't happen in the normal
-  -- "create a new named file" workflow.
-  --
-  -- Checking whether the doc's *content* is empty instead works
-  -- regardless of when or whether something pre-created the file on disk,
-  -- and still avoids re-filling a file you've already filled and saved
-  -- (its content is no longer empty at that point).
-  local is_empty_doc = #doc.lines <= 1 and (doc.lines[1] or ""):match("^%s*$") ~= nil
-  if doc.filename == filename and is_empty_doc and selected_module
-     and selected_module.file_fills and #selected_module.file_fills > 0 then
-    -- file_fills entries are tables ({ type = ..., content = ... }), and each
-    -- must be inserted in order -- inserting every entry at the fixed
-    -- position (1,1) in a loop would reverse their order, so build the
-    -- whole block first and insert it once.
-    local fill_lines = {}
-    for _, file_fill in ipairs(selected_module.file_fills) do
-      table.insert(fill_lines, file_fill.content or "")
-    end
-    doc:insert(1, 1, table.concat(fill_lines, "\n"))
+-- Computes the "package path" for a new file, based on where the file
+-- sits relative to the project root and the owning module's declared
+-- package_paths (module.package_paths) -- a list of
+-- { root = <folder relative to project root>, separator = <string>,
+--   last_segment_only = <bool>, default = <string> } entries, e.g. Java:
+-- { root = "src/main/java/", separator = "." }.
+--
+-- This is deliberately mechanical -- "find a matching root, strip it,
+-- join whatever folder segments are left with a separator" -- rather
+-- than encoding any single language's naming rules, since those vary a
+-- lot from language to language:
+--   Java / Kotlin / C#: want a dotted path of every folder from the
+--     declared source root down to the file's containing folder
+--     (package_paths = { { root = "src/main/java/", separator = "." } })
+--   Go: only wants the file's *immediate* containing folder name, not a
+--     joined path (package_paths = { { root = "", last_segment_only =
+--     true, default = "main" } })
+--   Python: packages are implicit via __init__.py, so a module for it
+--     likely wouldn't declare package_paths at all and this function
+--     would simply never be called for it
+-- Each module decides what to actually *do* with the raw string this
+-- returns via its own format_package_decl function (see modules/java.lua)
+-- -- this function only computes the path, so adding support for another
+-- language never requires touching this shared logic, only the new
+-- module's own package_paths/format_package_decl.
+--
+-- Returns nil if the module didn't declare package_paths, if the project
+-- root can't be determined, or if the file isn't under any declared root.
+local function resolve_package_path(module, abs_filename)
+  if not module.package_paths or not abs_filename then
+    return nil
   end
-  -- Return expected output (See old function)
-  return doc
+  local project_dir = fsutils.project_dir()
+  if not project_dir then
+    return nil
+  end
+
+  local rel_path = (abs_filename):gsub("\\", "/")
+  local project_prefix = (project_dir):gsub("\\", "/"):gsub("/*$", "") .. "/"
+  if rel_path:sub(1, #project_prefix) ~= project_prefix then
+    return nil
+  end
+  rel_path = rel_path:sub(#project_prefix + 1)
+
+  for _, entry in ipairs(module.package_paths) do
+    local root = (entry.root or ""):gsub("\\", "/"):gsub("^/*", ""):gsub("/*$", "")
+    if root ~= "" then
+      root = root .. "/"
+    end
+    if rel_path:sub(1, #root) == root then
+      -- Everything between the root and the filename itself -- i.e. the
+      -- folder segments that become package/namespace segments.
+      local folder_part = rel_path:sub(#root + 1):match("^(.*)/[^/]+$")
+      if not folder_part or folder_part == "" then
+        return entry.last_segment_only and (entry.default or "") or ""
+      end
+      if entry.last_segment_only then
+        return folder_part:match("([^/]+)$")
+      end
+      local segments = {}
+      for segment in folder_part:gmatch("[^/]+") do
+        table.insert(segments, segment)
+      end
+      return table.concat(segments, entry.separator or ".")
+    end
+  end
+
+  return nil
 end
 
--- TODO: add file_fill func. to New File from treeview context menu
+-- Expands a __PACKAGE_DECL__ placeholder that sits alone on its own line
+-- (same "whole line" convention __PARAMS_BLOCK__/__RETURN_BLOCK__ use in
+-- expand_doc_template) into package_decl, or drops the line entirely if
+-- package_decl is "" -- e.g. a Java file created outside any known source
+-- root simply gets no package statement, instead of a broken one. Also
+-- trims trailing blank lines the same way generate_doc_comment_at does,
+-- so dropping the placeholder never leaves a stray empty line behind.
+local function expand_package_decl(content, package_decl)
+  local out = {}
+  for line in (content .. "\n"):gmatch("(.-)\n") do
+    local stripped = line:match("^%s*(.-)%s*$")
+    if stripped == "__PACKAGE_DECL__" then
+      if package_decl ~= "" then
+        -- package_decl may itself be multiple lines (e.g. a module
+        -- bundling its own trailing blank line for spacing after the
+        -- statement) -- split it the same way so each becomes its own
+        -- entry, instead of one entry containing embedded newlines.
+        for decl_line in (package_decl .. "\n"):gmatch("(.-)\n") do
+          table.insert(out, decl_line)
+        end
+      end
+    else
+      table.insert(out, line)
+    end
+  end
+  while #out > 0 and out[#out] == "" do
+    table.remove(out)
+  end
+  return table.concat(out, "\n")
+end
+
+-- Builds the file_fill content for a brand-new file at `filename` (its
+-- module is looked up by extension), including package-path resolution.
+-- Shared by:
+--   - apply_file_fill, which inserts this into a Doc that's already been
+--     opened (used by the core.open_doc/Doc:save hooks below)
+--   - generate_new_file further down, which writes it straight to disk
+--     *before* anything ever opens a Doc for the file at all -- see the
+--     fix note on generate_new_file for why that's needed.
+-- Returns nil if there's no module for this extension, or the module has
+-- no file_fills declared.
+local function build_file_fill_content(filename)
+  local file_extension = string.match(filename or "", "%.%a+$")
+  local selected_module = select_module(file_extension)
+  if not selected_module or not selected_module.file_fills or #selected_module.file_fills == 0 then
+    return nil
+  end
+
+  -- Auto-determine the package path (see resolve_package_path above),
+  -- then let the module render it into whatever its language actually
+  -- wants that statement to look like (or to omit it -- see
+  -- format_package_decl in modules/java.lua). Modules that don't need
+  -- this concept at all (e.g. plainvanilla.lua's web components) simply
+  -- don't declare package_paths/format_package_decl, so package_decl
+  -- stays "" and any __PACKAGE_DECL__ line (there won't be one) would
+  -- just be dropped.
+  local package_path = resolve_package_path(selected_module, filename)
+  local package_decl = ""
+  if selected_module.format_package_decl then
+    package_decl = selected_module.format_package_decl(package_path) or ""
+  end
+
+  -- file_fills entries are tables ({ type = ..., content = ... }), and each
+  -- must be inserted in order -- inserting every entry at the fixed
+  -- position (1,1) in a loop would reverse their order, so build the
+  -- whole block first and insert it once.
+  local fill_lines = {}
+  for _, file_fill in ipairs(selected_module.file_fills) do
+    table.insert(fill_lines, expand_package_decl(file_fill.content or "", package_decl))
+  end
+  return table.concat(fill_lines, "\n")
+end
+
+-- Shared: given a doc and the filename that applies to it, insert the
+-- matching module's file_fill content if the doc is still empty. Used by
+-- both the core.open_doc override (covers a treeview that creates the
+-- file on disk first, then opens it by filename) and the Doc:save
+-- override below (covers the far more common "core.open_doc() then
+-- doc:save(name)" idiom, where the filename isn't known until save time).
+--
+-- Root cause: the common lite-xl idiom for creating a brand-new file
+-- (used by core:open-project-module in lite's own source, and by most
+-- treeview "New File" implementations) is:
+--     local doc = core.open_doc()   -- no filename yet!
+--     core.root_view:open_doc(doc)
+--     doc:save(name)                -- filename is only set *here*
+-- The core.open_doc override further below only ever saw
+-- `filename == nil` in this flow, so file_extension could never be
+-- resolved and no module/fill was ever found -- the fill silently never
+-- fired at creation time. It only ever appeared to work when the file was
+-- *reopened* afterwards (e.g. by clicking it in the treeview), because
+-- that calls core.open_doc(filename) fresh with the real filename, on a
+-- doc that was still empty on disk.
+--
+-- UPDATE: this (and the Doc:save hook below) turned out not to be enough
+-- -- the symptom persisted even with both hooks in place, which means
+-- whatever treeview plugin is in use here creates files through neither
+-- idiom (most likely: a raw io.open()/close() that never touches
+-- core.open_doc or Doc:save until the file is later clicked open). Since
+-- that plugin's internals aren't visible from here, generate_new_file
+-- further down sidesteps the guesswork entirely by giving codegen its own
+-- file-creation command that writes the fill straight to disk itself.
+-- These two hooks are left in place as a safety net for any flow that
+-- *does* go through core.open_doc/Doc:save (e.g. Ctrl+N, or another
+-- treeview plugin), but generate_new_file is the reliable path.
+local function apply_file_fill(doc, filename)
+  local is_empty_doc = #doc.lines <= 1 and (doc.lines[1] or ""):match("^%s*$") ~= nil
+  if not is_empty_doc then
+    return false
+  end
+  local content = build_file_fill_content(doc.abs_filename or filename)
+  if not content then
+    return false
+  end
+  doc:insert(1, 1, content)
+  return true
+end
+
+-- FIX: Automatic FILE FILL of New Named Doc
+local old_open_doc = core.open_doc
+function core.open_doc(filename, ...)
+  local doc = old_open_doc(filename, ...)
+  if doc.filename == filename then
+    apply_file_fill(doc, filename)
+  end
+  return doc
+end
 
 -- NOTE: requires interaction with `lsp` to get the symbols data
 -- Writes text into existing file starting from given position in the doc (specified in module)
@@ -729,7 +889,7 @@ local function detect_symbol_at_line(line)
   return nil
 end
 
--- Per the original TODO: "check that symbol doesn't already have doc
+-- Per the original todo: "check that symbol doesn't already have doc
 -- comments above". Walks upward past any blank lines and checks whether
 -- the next non-blank line looks like the end (or the whole) of a block
 -- comment.
@@ -855,6 +1015,19 @@ local function generate_doc_comment_at(doc, line_num)
     end
   end
 
+  -- docs_* templates in modules/*.lua are Lua long-bracket strings whose
+  -- content always ends with a trailing newline right before the closing
+  -- "]]" (e.g. "...\n */\n"). Splitting on "\n" in the loop above turns
+  -- that trailing newline into one extra empty-string entry at the end of
+  -- final_lines. Left in place, table.concat joining that empty entry
+  -- with "\n" plus the "\n" appended below produced *two* newlines after
+  -- the comment's closing "*/" line -- i.e. a blank line between the doc
+  -- comment and the symbol it documents. Trimming trailing empty entries
+  -- keeps the comment immediately above its symbol, with no gap.
+  while #final_lines > 0 and final_lines[#final_lines] == "" do
+    table.remove(final_lines)
+  end
+
   doc:insert(line_num, 1, table.concat(final_lines, "\n") .. "\n")
   core.log("[codegen] Inserted %s doc comment for \"%s\"", symbol.type, symbol.name)
   return true
@@ -921,7 +1094,7 @@ end
 -- Placeholders, per the comment in modules/plainvanilla.lua:
 --   __FILENAME__        -> substituted in the filename
 --   __COMPONENT_NAME__  -> substituted in the file content
--- Both are replaced with name_text as-is. The module's own TODO about
+-- Both are replaced with name_text as-is. The module's own todo about
 -- upper/lower-casing depending on where the name lands (e.g. PascalCase
 -- for a class vs kebab-case for a custom element tag) isn't handled here --
 -- if you need that, generate case variants of name_text and substitute a
@@ -1032,6 +1205,62 @@ local function generate_component()
   })
 end
 
+-- The two hooks up in apply_file_fill's history (core.open_doc and
+-- Doc:save) both assumed a *specific* idiom for how a "New File" command
+-- creates a file, and neither turned out to match whatever this project's
+-- treeview plugin actually does internally -- which isn't visible from
+-- here, so hooking it precisely isn't possible without guessing again.
+--
+-- This sidesteps that entirely: instead of intercepting an unknown
+-- third-party "New File" flow, codegen creates the file itself, writes
+-- its module's file_fill content straight to disk via
+-- build_file_fill_content *before* anything ever opens a Doc for it, and
+-- then opens it. That guarantees the fill is there from the very first
+-- moment the file exists -- no dependency on when/whether some other
+-- plugin's internals happen to call core.open_doc or Doc:save.
+--
+-- Entry point, run from the treeview's folder context menu: prompts for a
+-- filename inside the right-clicked folder.
+local function generate_new_file()
+  local target_dir = TreeView.hovered_item and TreeView.hovered_item.abs_filename
+  if not target_dir or not fsutils.is_dir(target_dir) then
+    core.error("[codegen] New File (with fill) must be run on a folder (right-click a folder in the tree view)")
+    return
+  end
+
+  core.command_view:enter("New filename", {
+    submit = function(name_text)
+      if not name_text or name_text:match("^%s*$") then
+        core.error("[codegen] No filename provided")
+        return
+      end
+
+      local full_path = target_dir .. SEP .. name_text
+      if fsutils.is_object_exist(full_path) then
+        core.error("[codegen] File already exists: %s", full_path)
+        return
+      end
+
+      -- Written directly with io, same as create_and_fill_file, rather
+      -- than going through core.open_doc/Doc:save -- there's no Doc to
+      -- insert into yet, and there doesn't need to be one: the content
+      -- (fill, or "" if this extension has no module/file_fills) goes
+      -- straight into the new file before it's ever opened.
+      local content = build_file_fill_content(full_path) or ""
+      local file, err = io.open(full_path, "wb")
+      if not file then
+        core.error("[codegen] Could not create file \"%s\": %s", full_path, err or "unknown error")
+        return
+      end
+      file:write(content)
+      file:close()
+
+      core.root_view:open_doc(core.open_doc(full_path))
+      core.log("[codegen] Created %s", full_path)
+    end
+  })
+end
+
 ------------------
 -- Context Menu --
 ------------------
@@ -1050,6 +1279,7 @@ treeview_menu:register(
   {
     treeview_menu.DIVIDER,
     { text = "Test FOLDER", command = "code-generator:test-global-folder" },
+    { text = "New File (with fill)", command = "code-generator:new-file" },
     { text = "Generate Component", command = "code-generator:generate_component" },
   }
 )
@@ -1071,11 +1301,23 @@ contextmenu:register(
   {
     contextmenu.DIVIDER,
     { text = "Test DocView", command = "code-generator:test-global" },
-    { text = "Wrap Selection", command = "code-generator:wrap-code-selection" },
     { text = "Generate Doc Comment", command = "code-generator:generate-doc-comment" },
     { text = "Generate Doc Comments (All)", command = "code-generator:generate-doc-comments" },
-    -- TODO: functionality: add boilerplate (all vars/funcs by default, then remove the unneeded ones)
-    -- TODO: functionality: update boilerplate (requires lsp+lsp-server integration)
+  }
+)
+
+-- Registered separately (rather than left inline above) because
+-- contextmenu:register()'s first argument is the gate for every item in
+-- that call -- "core.docview" above is unconditional (always true for any
+-- docview), so it can't also express "...and only if something's
+-- selected" for one single item without hiding the whole group. Passing
+-- has_active_selection as the gate here re-checks it live every time the
+-- menu is about to open, exactly like TreeView.contextmenu's predicate
+-- registrations elsewhere in this file.
+contextmenu:register(
+  has_active_selection,
+  {
+    { text = "Wrap Selection", command = "code-generator:wrap-code-selection" },
   }
 )
 
@@ -1109,9 +1351,15 @@ command.add(
     ["code-generator:test-in-doc"] = test_in_doc,
     -- Final
     ["code-generator:generate-boilerplate"] = generate_boilerplate,
-    ["code-generator:wrap-code-selection"] = wrap_code_selection,
     ["code-generator:generate-doc-comment"] = generate_doc_comment,
     ["code-generator:generate-doc-comments"] = generate_doc_comments
+  }
+)
+
+command.add(
+  has_active_selection,
+  {
+    ["code-generator:wrap-code-selection"] = wrap_code_selection
   }
 )
 
@@ -1133,7 +1381,8 @@ command.add(
   function()
     return TreeView.hovered_item and fsutils.is_dir(TreeView.hovered_item.abs_filename) == true
   end, {
-    ["code-generator:generate_component"] = generate_component
+    ["code-generator:generate_component"] = generate_component,
+    ["code-generator:new-file"] = generate_new_file
   }
 )
 

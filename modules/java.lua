@@ -172,10 +172,7 @@ codegen.add_module() {
       content = docs_method
     },
   },
-  components = {
-    -- ?: Entity + EntityDAO + EntityService + EntityController
-    -- ?: Entity + EntityDTO + EntityJpaRepository + EntityService + EntityController
-  },
+  components = {},
   properties = {
     ["root_package_path"] = {
       "src/main/java/"
